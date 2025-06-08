@@ -3,14 +3,13 @@ name: Build and Push Mastodon Docker Image
 on:
   push:
     branches:
-      - main
+      - develop
   workflow_dispatch:
 
 env:
   REGISTRY_IMAGE: ghcr.io/alienfamilyhub/mastodon
 
 jobs:
-  # 准备构建矩阵
   prepare:
     runs-on: ubuntu-latest
     outputs:
@@ -18,15 +17,15 @@ jobs:
     steps:
       - id: platforms
         run: |
-          echo "matrix={\"include\":[{\"platform\":\"linux/amd64\",\"runner\":\"ubuntu-latest\"},{\"platform\":\"linux/arm64\",\"runner\":\"macos-latest-xlarge\"}]}" >> $GITHUB_OUTPUT
+          echo "matrix={\"platform\":[\"linux/amd64\",\"linux/arm64\"]}" >> $GITHUB_OUTPUT
 
-  # 构建和推送
   build-and-push:
     needs: prepare
+    # 使用 ubuntu-latest-4-cores 获取更好的性能
+    runs-on: ubuntu-latest-4-cores
     strategy:
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
       fail-fast: false
-    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
@@ -42,12 +41,36 @@ jobs:
           echo "SHA_SHORT=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
           echo "DATE=$(date -u +'%Y-%m-%d')" >> $GITHUB_OUTPUT
 
+      # 安装并配置 KVM
+      - name: 设置 KVM
+        if: contains(matrix.platform, 'arm')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils
+          sudo usermod -aG kvm $USER
+          sudo usermod -aG libvirt $USER
+          sudo systemctl enable --now libvirtd
+          sudo modprobe kvm
+          sudo chmod 666 /dev/kvm
+
+      # 使用 KVM 加速的 QEMU
+      - name: 设置 QEMU
+        if: contains(matrix.platform, 'arm')
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: ${{ matrix.platform }}
+          use-kvm: true
+
       - name: 设置 Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
+          platforms: ${{ matrix.platform }}
           driver-opts: |
             image=moby/buildkit:master
             network=host
+          buildkitd-flags: |
+            --allow-insecure-entitlement security.insecure
+            --allow-insecure-entitlement network.host
 
       - name: 登录到 GitHub Container Registry
         uses: docker/login-action@v3
@@ -65,13 +88,8 @@ jobs:
           tags: |
             type=raw,value=latest-${{ steps.vars.outputs.ARCH }}
             type=raw,value=${{ steps.vars.outputs.DATE }}-${{ steps.vars.outputs.SHA_SHORT }}-${{ steps.vars.outputs.ARCH }}
-          labels: |
-            org.opencontainers.image.title=Mastodon
-            org.opencontainers.image.description=Your self-hosted, globally interconnected microblogging community
-            org.opencontainers.image.created=${{ steps.vars.outputs.DATE }}
-            org.opencontainers.image.revision=${{ github.sha }}
 
-      # 构建和推送
+      # 构建和推送，使用优化的构建参数
       - name: 构建并推送 Docker 镜像
         uses: docker/build-push-action@v5
         with:
@@ -83,12 +101,21 @@ jobs:
           cache-from: |
             type=gha,scope=${{ matrix.platform }}
             type=registry,ref=${{ env.REGISTRY_IMAGE }}:latest-${{ steps.vars.outputs.ARCH }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+            type=registry,ref=${{ env.REGISTRY_IMAGE }}:buildcache-${{ steps.vars.outputs.ARCH }}
+          cache-to: |
+            type=gha,mode=max,scope=${{ matrix.platform }}
+            type=registry,ref=${{ env.REGISTRY_IMAGE }}:buildcache-${{ steps.vars.outputs.ARCH }},mode=max
+          # 优化构建参数
           build-args: |
-            BUILD_DATE=${{ steps.vars.outputs.DATE }}
-            VCS_REF=${{ github.sha }}
+            BUILDKIT_STEP_LOG_MAX_SIZE=10485760
+            BUILDKIT_STEP_LOG_MAX_SPEED=10485760
+            DOCKER_BUILDKIT=1
+          # 添加构建上下文配置
+          outputs: type=docker,dest=/tmp/docker-image
+          allow: |
+            network.host
+            security.insecure
 
-  # 创建多架构清单
   create-manifest:
     needs: [build-and-push]
     runs-on: ubuntu-latest
@@ -104,16 +131,13 @@ jobs:
 
       - name: 创建并推送清单
         run: |
-          # 设置版本变量
           SHA_SHORT=$(echo ${{ github.sha }} | cut -c1-7)
           DATE=$(date -u +'%Y-%m-%d')
 
-          # 创建最新版本的清单
           docker buildx imagetools create -t ${{ env.REGISTRY_IMAGE }}:latest \
             ${{ env.REGISTRY_IMAGE }}:latest-amd64 \
             ${{ env.REGISTRY_IMAGE }}:latest-arm64
 
-          # 创建带时间戳和 SHA 的清单
           docker buildx imagetools create -t ${{ env.REGISTRY_IMAGE }}:${DATE}-${SHA_SHORT} \
             ${{ env.REGISTRY_IMAGE }}:${DATE}-${SHA_SHORT}-amd64 \
             ${{ env.REGISTRY_IMAGE }}:${DATE}-${SHA_SHORT}-arm64
