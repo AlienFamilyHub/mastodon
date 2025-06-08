@@ -3,7 +3,7 @@ name: Build and Push Mastodon Docker Image
 on:
   push:
     branches:
-      - develop
+      - main
   workflow_dispatch:
 
 env:
@@ -21,8 +21,7 @@ jobs:
 
   build-and-push:
     needs: prepare
-    # 使用 ubuntu-latest-4-cores 获取更好的性能
-    runs-on: ubuntu-latest-4-cores
+    runs-on: ubuntu-latest
     strategy:
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
       fail-fast: false
