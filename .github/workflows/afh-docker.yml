@@ -104,16 +104,11 @@ jobs:
           cache-to: |
             type=gha,mode=max,scope=${{ matrix.platform }}
             type=registry,ref=${{ env.REGISTRY_IMAGE }}:buildcache-${{ steps.vars.outputs.ARCH }},mode=max
-          # 优化构建参数
           build-args: |
             BUILDKIT_STEP_LOG_MAX_SIZE=10485760
             BUILDKIT_STEP_LOG_MAX_SPEED=10485760
             DOCKER_BUILDKIT=1
-          # 添加构建上下文配置
           outputs: type=docker,dest=/tmp/docker-image
-          allow: |
-            network.host
-            security.insecure
 
   create-manifest:
     needs: [build-and-push]
