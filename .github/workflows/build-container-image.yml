@@ -18,6 +18,7 @@ on:
         type: string
       file_to_build:
         type: string
+  workflow_dispatch:
 
 # This builds multiple images with one runner each, allowing us to build for multiple architectures
 # using Github's runners.
